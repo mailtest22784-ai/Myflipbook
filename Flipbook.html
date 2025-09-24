@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Simple Digital Flipbook</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background-color: #f0f0f0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin: 0;
+   : 20px;
+  }
+
+  #flipbook {
+    width: 600px;
+    height: 400px;
+    background-color: white;
+    border: 2px solid #ccc;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 24px;
+    position: relative;
+    padding: 20px;
+    box-sizing: border-box;
+  }
+
+  #pageContent {
+    width: 100%;
+    text-align: center;
+  }
+
+  .buttons {
+    margin-top: 20px;
+  }
+
+  button {
+    background-color: #007BFF;
+    border: none;
+    color: white;
+    padding: 10px 20px;
+    margin: 0 10px;
+    font-size: 16px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+
+  button:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+  }
+</style>
+</head>
+<body>
+
+<h1>Simple Digital Flipbook</h1>
+
+<div id="flipbook">
+  <div id="pageContent">Page 1</div>
+</div>
+
+<div class="buttons">
+  <button id="prevBtn">Previous</button>
+  <button id="nextBtn">Next</button>
+</div>
+
+<script>
+  const pages = [
+    "Page 1 Content: Welcome to the flipbook!",
+    "Page 2 Content: Here's some more information.",
+    "Page 3 Content: Thanks for flipping through.",
+    "Page 4 Content: The End."
+  ];
+
+  let currentPage = 0;
+
+  const pageContent = document.getElementById('pageContent');
+  const prevBtn = document.getElementById('prevBtn');
+  const nextBtn = document.getElementById('nextBtn');
+
+  function updatePage() {
+    pageContent.textContent = pages[currentPage];
+    prevBtn.disabled = currentPage === 0;
+    nextBtn.disabled = currentPage === pages.length - 1;
+  }
+
+  prevBtn.addEventListener('click', () => {
+    if (currentPage > 0) {
+      currentPage--;
+      updatePage();
+    }
+  });
+
+  nextBtn.addEventListener('click', () => {
+    if (currentPage < pages.length - 1) {
+      currentPage++;
+      updatePage();
+    }
+  });
+
+  // Initialize the first page
+  updatePage();
+</script>
+
+</body>
+</html>
