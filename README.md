@@ -1,2 +1,493 @@
 # Myflipbook
- ( sapno ki dibia[!(https://g.co/gemini/share/0ef9b384bbdd)])
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Flipbook App</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom styles for the 3D flip effect */
+        .flipbook-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            perspective: 2000px; /* Strong perspective for 3D effect */
+            -webkit-perspective: 2000px;
+        }
+
+        .page {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            transform-style: preserve-3d;
+            transform-origin: left center;
+            transition: transform 0.8s ease-in-out, z-index 0s 0.8s;
+            backface-visibility: hidden;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            border-radius: 0.5rem;
+            display: flex;
+            flex-direction: column;
+            padding: 1rem;
+            overflow: hidden;
+            background-color: #f7f3e8; /* Default page background */
+            border: 1px solid #dcd7c9;
+            z-index: 10;
+        }
+
+        /* Front face of the page */
+        .page-front {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            backface-visibility: hidden;
+            pointer-events: none;
+            display: block;
+        }
+
+        /* Back face of the page */
+        .page-back {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            transform: rotateY(180deg);
+            backface-visibility: hidden;
+            display: block;
+            pointer-events: none;
+        }
+
+        /* State when the page is being flipped (rotated 180 degrees) */
+        .flipped {
+            transform: rotateY(-180deg);
+            z-index: 20;
+            transition: transform 0.8s ease-in-out;
+        }
+
+        /* The cover page should rotate slightly differently */
+        .cover {
+            transform-origin: center center;
+            transition: transform 0.8s ease-in-out, z-index 0s 0.8s;
+        }
+        .cover-flipped {
+            transform: rotateY(-180deg) translateX(0);
+            z-index: 20;
+            transition: transform 0.8s ease-in-out;
+        }
+        
+        .z-50 { z-index: 50 !important; }
+
+        /* The active page content area */
+        .page-content {
+            flex-grow: 1;
+            padding: 1rem;
+            line-height: 1.6;
+            overflow-y: auto;
+            color: #333;
+        }
+
+        /* Styles for the edit textarea */
+        .page-editor {
+            width: 100%;
+            height: 100%;
+            resize: none;
+            border: none;
+            background: transparent;
+            padding: 0;
+            font-family: inherit;
+            line-height: 1.6;
+            font-size: 1rem;
+            color: #333;
+            outline: none;
+        }
+        
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 md:p-8 flex items-center justify-center font-sans">
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, query, orderBy, onSnapshot, doc, setDoc, deleteDoc, runTransaction, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Set Firebase Log Level to Debug
+        setLogLevel('Debug');
+
+        // Global Firebase Variables (Mandatory)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-flipbook-app';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let userId = null;
+        let isAuthReady = false;
+
+        // --- Core Functions ---
+
+        /**
+         * Initializes Firebase and authenticates the user.
+         */
+        const initFirebase = async () => {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase config is missing. Cannot initialize Firestore.");
+                    return;
+                }
+                app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Sign in with custom token or anonymously
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                
+                onAuthStateChanged(auth, (user) => {
+                    userId = user ? user.uid : 'anonymous_' + crypto.randomUUID();
+                    document.getElementById('user-id-display').textContent = 'User ID: ' + userId;
+                    isAuthReady = true;
+                    // Once authenticated, start listening for data
+                    if (user) {
+                        setupFirestoreListener();
+                    } else {
+                        // For anonymous users, we still load the listener,
+                        // but the security rules should only allow read/write if they are signed in.
+                        // However, we use the userId variable to make the path unique per anonymous user.
+                        setupFirestoreListener();
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error during Firebase initialization or authentication:", error);
+                document.getElementById('status-message').textContent = 'Error: Failed to connect to database.';
+            }
+        };
+
+        const FLIPBOOK_COLLECTION = 'flipbook_pages';
+
+        /**
+         * Generates the collection path for the current user's private flipbook.
+         */
+        const getCollectionRef = () => {
+            if (!db || !userId) return null;
+            // Private data path: /artifacts/{appId}/users/{userId}/{collectionName}
+            const path = `artifacts/${appId}/users/${userId}/${FLIPBOOK_COLLECTION}`;
+            return collection(db, path);
+        };
+
+        /**
+         * Saves or updates a page document in Firestore.
+         * @param {string} pageId - The ID of the page document.
+         * @param {object} data - The page data (content, color, index).
+         */
+        const savePage = async (pageId, data) => {
+            if (!isAuthReady) return;
+            const colRef = getCollectionRef();
+            if (!colRef) return;
+
+            const pageRef = doc(colRef, pageId);
+            try {
+                await setDoc(pageRef, data, { merge: true });
+            } catch (error) {
+                console.error("Error saving page:", error);
+                document.getElementById('status-message').textContent = 'Error: Could not save page.';
+            }
+        };
+
+        /**
+         * Deletes a page document from Firestore and updates the indices of subsequent pages.
+         * @param {string} pageIdToDelete - The ID of the page to delete.
+         * @param {number} indexToDelete - The index of the page to delete.
+         */
+        const deletePage = async (pageIdToDelete, indexToDelete) => {
+            if (!isAuthReady || !db) return;
+            const colRef = getCollectionRef();
+            if (!colRef) return;
+            
+            const pageRefToDelete = doc(colRef, pageIdToDelete);
+            
+            try {
+                // Use a transaction to ensure atomicity for deleting and re-indexing
+                await runTransaction(db, async (transaction) => {
+                    // 1. Delete the page
+                    transaction.delete(pageRefToDelete);
+
+                    // 2. Fetch all pages with index > indexToDelete and re-index them
+                    const pagesQuery = query(colRef, orderBy('index'));
+                    const querySnapshot = await getDoc(querySnapshot, pagesQuery);
+
+                    querySnapshot.docs.forEach(docSnapshot => {
+                        const page = docSnapshot.data();
+                        if (page.index > indexToDelete) {
+                            // Decrement the index
+                            const newIndex = page.index - 1;
+                            const docRef = doc(colRef, docSnapshot.id);
+                            transaction.update(docRef, { index: newIndex });
+                        }
+                    });
+                });
+                
+                console.log("Page successfully deleted and re-indexed.");
+            } catch (e) {
+                console.error("Transaction failed: ", e);
+                document.getElementById('status-message').textContent = 'Error: Could not delete or re-index page.';
+            }
+        };
+        
+        /**
+         * Adds a new page to the end of the flipbook.
+         */
+        const addPage = async (content = 'New Page Content', color = '#f7f3e8') => {
+            if (!isAuthReady) return;
+            const colRef = getCollectionRef();
+            if (!colRef) return;
+            
+            try {
+                // Determine the next index
+                const pagesQuery = query(colRef, orderBy('index', 'desc'));
+                const lastPageSnapshot = await getDoc(pagesQuery);
+                
+                let nextIndex = 0;
+                if (!lastPageSnapshot.empty) {
+                    // The last page's index, plus one
+                    nextIndex = lastPageSnapshot.docs[0].data().index + 1;
+                }
+
+                // Add the new page
+                const newPageRef = doc(colRef); // Generate a new ID
+                await setDoc(newPageRef, {
+                    pageId: newPageRef.id,
+                    index: nextIndex,
+                    content: content,
+                    color: color
+                });
+                
+                console.log("New page added successfully.");
+                
+            } catch (error) {
+                console.error("Error adding new page:", error);
+                document.getElementById('status-message').textContent = 'Error: Could not add new page.';
+            }
+        };
+
+
+        let pagesData = [];
+        let currentIndex = 0; // The index of the *right* page being viewed
+
+        /**
+         * Sets up the real-time listener for the flipbook data.
+         */
+        const setupFirestoreListener = () => {
+            const colRef = getCollectionRef();
+            if (!colRef) return;
+
+            const q = query(colRef, orderBy('index'));
+            
+            onSnapshot(q, (snapshot) => {
+                const newPagesData = [];
+                snapshot.forEach((doc) => {
+                    newPagesData.push(doc.data());
+                });
+                
+                // Update the state
+                pagesData = newPagesData;
+                renderFlipbook();
+                document.getElementById('status-message').textContent = 'Data loaded and synced.';
+            }, (error) => {
+                console.error("Error fetching documents:", error);
+                document.getElementById('status-message').textContent = 'Error: Failed to sync data.';
+            });
+        };
+        
+        window.addEventListener('load', initFirebase);
+        
+        // --- Flipbook UI Logic (Interacting with pagesData) ---
+
+        /**
+         * Renders the flipbook UI based on the pagesData array.
+         */
+        const renderFlipbook = () => {
+            const flipbookElement = document.getElementById('flipbook');
+            const editContentArea = document.getElementById('edit-content-area');
+            const editPageIdInput = document.getElementById('edit-page-id');
+            const editPageTitle = document.getElementById('edit-page-title');
+            
+            flipbookElement.innerHTML = '';
+            
+            // The "book" has a Cover (index 0) and then pages (index 1, 2, 3...)
+            const totalPages = pagesData.length;
+            
+            // 1. Create the Cover (Page 0)
+            const coverPage = document.createElement('div');
+            coverPage.id = `page-0`;
+            coverPage.className = 'page cover';
+            coverPage.style.zIndex = totalPages + 1;
+            coverPage.innerHTML = `
+                <div class="page-front text-center pt-24">
+                    <h1 class="text-4xl font-bold text-gray-800">My Digital Flipbook</h1>
+                    <p class="text-xl mt-4 text-gray-600">Created by: ${userId.substring(0, 8)}...</p>
+                    <button id="next-page-0" class="mt-12 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg shadow-lg transition duration-200">
+                        Start Reading <span class="ml-2">→</span>
+                    </button>
+                </div>
+            `;
+            flipbookElement.appendChild(coverPage);
+
+            // Add the pages
+            pagesData.forEach((page, index) => {
+                // The index in the array is page index - 1. Book page index starts at 1.
+                const bookPageIndex = index + 1; 
+
+                const pageElement = document.createElement('div');
+                pageElement.id = `page-${bookPageIndex}`;
+                pageElement.className = 'page';
+                // Higher index pages should be on top
+                pageElement.style.zIndex = totalPages - index; 
+                pageElement.style.backgroundColor = page.color || '#f7f3e8';
+                
+                // Front Face (Right Page Content)
+                const frontContent = page.content.substring(0, 1000).replace(/\n/g, '<br>');
+                const frontFace = document.createElement('div');
+                frontFace.className = 'page-front page-content';
+                frontFace.innerHTML = `
+                    <h2 class="text-2xl font-bold mb-4 text-gray-800">Page ${bookPageIndex}</h2>
+                    <div class="text-sm">${frontContent}</div>
+                `;
+                pageElement.appendChild(frontFace);
+                
+                // Back Face (Left Page Content - from the next page in sequence)
+                const nextPage = pagesData[index + 1];
+                let backContent = '';
+                if (nextPage) {
+                    backContent = nextPage.content.substring(0, 1000).replace(/\n/g, '<br>');
+                } else {
+                    backContent = 'End of book.';
+                }
+                
+                const backFace = document.createElement('div');
+                backFace.className = 'page-back page-content';
+                backFace.innerHTML = `
+                    <h2 class="text-2xl font-bold mb-4 text-gray-800">Page ${bookPageIndex + 1}</h2>
+                    <div class="text-sm">${backContent}</div>
+                `;
+                pageElement.appendChild(backFace);
+                
+                flipbookElement.appendChild(pageElement);
+            });
+            
+            // 2. Add the last physical page/back cover (always blank)
+            const backCover = document.createElement('div');
+            backCover.id = 'page-last';
+            backCover.className = 'page';
+            backCover.style.zIndex = 1;
+            backCover.style.backgroundColor = '#dcd7c9';
+            backCover.innerHTML = `
+                <div class="page-content text-center pt-24">
+                    <h2 class="text-3xl font-bold text-gray-700">The End</h2>
+                    <p class="text-md mt-4 text-gray-500">A finished flipbook!</p>
+                </div>
+            `;
+            flipbookElement.appendChild(backCover);
+            
+            
+            // Attach event listeners after all elements are rendered
+            document.getElementById('next-page-0')?.addEventListener('click', () => turnPage(1));
+            document.getElementById('add-page-btn').onclick = addPage;
+            
+            // Set up page turn navigation
+            const bookWidth = flipbookElement.offsetWidth;
+            flipbookElement.querySelectorAll('.page').forEach(page => {
+                // Clicks on the left half of the page go back
+                const leftZone = document.createElement('div');
+                leftZone.className = 'absolute top-0 left-0 h-full w-1/2 cursor-pointer z-50';
+                leftZone.onclick = (e) => {
+                    e.stopPropagation();
+                    turnPage(-1); // Turn back
+                };
+
+                // Clicks on the right half of the page go forward
+                const rightZone = document.createElement('div');
+                rightZone.className = 'absolute top-0 right-0 h-full w-1/2 cursor-pointer z-50';
+                rightZone.onclick = (e) => {
+                    e.stopPropagation();
+                    turnPage(1); // Turn forward
+                };
+                
+                if (page.id !== 'page-last') {
+                    page.appendChild(leftZone);
+                    page.appendChild(rightZone);
+                }
+            });
+
+            // Update page editor with current page data
+            updateEditorPanel();
+            
+            // Ensure the initial state is rendered correctly
+            applyPageFlipStyles();
+        };
+
+        /**
+         * Handles the page turn action.
+         * @param {number} direction - 1 for forward, -1 for backward.
+         */
+        const turnPage = (direction) => {
+            const totalPages = pagesData.length; // Book pages start at index 1
+
+            let newIndex = currentIndex + direction;
+
+            // Page indices: 0 (Cover) to totalPages (Last content page)
+            // The book pages are numbered 1 to totalPages. 
+            // currentIndex is the *index* of the page currently visible on the right.
+            
+            // Check boundaries
+            if (newIndex < 0 || newIndex > totalPages) {
+                return;
+            }
+
+            // Update the index
+            currentIndex = newIndex;
+            
+            // Update the UI
+            applyPageFlipStyles();
+            updateEditorPanel();
+        };
+
+        /**
+         * Applies the 'flipped' class based on the current index.
+         */
+        const applyPageFlipStyles = () => {
+            const totalPages = pagesData.length;
+            
+            // 1. Handle Cover Page (index 0)
+            const cover = document.getElementById('page-0');
+            if (cover) {
+                if (currentIndex >= 1) {
+                    cover.classList.add('cover-flipped');
+                } else {
+                    cover.classList.remove('cover-flipped');
+                }
+            }
+            
+            // 2. Handle Content Pages (index 1 to totalPages)
+            for (let i = 1; i <= totalPages; i++) {
+                const pageElement = document.getElementById(`page-${i}`);
+                if (pageElement) {
+                    if (i <= currentIndex) {
+                        pageElement.classList.add('flipped');
+                        // Ensure flipped pages don't block interaction by moving them below
+                        pageElement.style.zIndex = 100 - i;
+                    } else {
+                        pageElement.classList.remove('flipped');
+                        // Reset z-index
+                        pageElement.style.zIndex = totalPages - i + 1;
+                    }
+                }
+            }
+        };
+
+        /**
+         * Populates the editor panel with content
